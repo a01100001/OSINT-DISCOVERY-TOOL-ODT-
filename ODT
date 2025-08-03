@@ -1,0 +1,197 @@
+import scapy.all as scapy
+import nmap
+import socket
+import sys
+
+def get_target_url():
+    """Prompts the user for a target URL and validates it."""
+    try:
+        target_url = input("Please enter the target URL (e.g., example.com): ")
+        if not target_url:
+            print("Error: URL cannot be empty.")
+            return None
+        return target_url
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+
+def host_discovery(target):
+    """Performs various ping scans to discover live hosts."""
+    print("\n[+] 1. Host Discovery...")
+    live_hosts = []
+    
+    try:
+        # ICMP Ping Scan
+        print("  - Performing ICMP Ping Scan...")
+        ans, unans = scapy.sr(scapy.IP(dst=target)/scapy.ICMP(), timeout=2, verbose=0)
+        for s, r in ans:
+            if r.src not in live_hosts:
+                live_hosts.append(r.src)
+            
+        # ARP Ping Scan (Works for local network only)
+        # Note: This requires a valid IP address.
+        try:
+            ip_addr = socket.gethostbyname(target)
+            print("  - Performing ARP Ping Scan...")
+            ans, unans = scapy.srp(scapy.Ether(dst="ff:ff:ff:ff:ff:ff")/scapy.ARP(pdst=ip_addr), timeout=2, verbose=0)
+            for s, r in ans:
+                if r.psrc not in live_hosts:
+                    live_hosts.append(r.psrc)
+        except (socket.gaierror, scapy.Scapy_Exception):
+            print("    Could not get a valid IP address for ARP scan. Skipping.")
+
+        # UDP Ping Scan
+        print("  - Performing UDP Ping Scan...")
+        ans, unans = scapy.sr(scapy.IP(dst=target)/scapy.UDP(dport=33434), timeout=2, verbose=0)
+        for s, r in ans:
+            if r.src not in live_hosts:
+                live_hosts.append(r.src)
+
+        # TCP Ping Scan
+        print("  - Performing TCP Ping Scan...")
+        ans, unans = scapy.sr(scapy.IP(dst=target)/scapy.TCP(dport=80, flags="S"), timeout=2, verbose=0)
+        for s, r in ans:
+            if r.src not in live_hosts:
+                live_hosts.append(r.src)
+                
+    except Exception as e:
+        print(f"  An error occurred: {e}")
+        
+    unique_hosts = list(set(live_hosts))
+    if unique_hosts:
+        print(f"  Live hosts found: {unique_hosts}")
+    else:
+        print("  No live hosts found.")
+        
+    return unique_hosts
+
+def port_scanning(target):
+    """Performs various port scans to detect open ports."""
+    print("\n[+] 2. Port Scanning...")
+    open_ports = {}
+    
+    try:
+        # Use Nmap's PortScanner class
+        nm = nmap.PortScanner()
+        
+        # TCP Connect/Full Open Scan
+        print("  - Performing TCP Connect/Full Open Scan...")
+        nm.scan(target, arguments='-sT')
+        open_ports['tcp_connect'] = nm[target]['tcp']
+        
+        # UDP Scan
+        print("  - Performing UDP Scan...")
+        nm.scan(target, arguments='-sU')
+        open_ports['udp'] = nm[target]['udp']
+        
+        # Half-Open Scan
+        print("  - Performing Half-Open Scan...")
+        nm.scan(target, arguments='-sS')
+        open_ports['syn_scan'] = nm[target]['tcp']
+        
+        # Xmas Scan
+        print("  - Performing Xmas Scan...")
+        nm.scan(target, arguments='-sX')
+        open_ports['xmas_scan'] = nm[target]['tcp']
+        
+        # SCTP INIT Scan
+        print("  - Performing SCTP INIT Scan...")
+        nm.scan(target, arguments='-sY')
+        open_ports['sctp_init'] = nm[target]['sctp']
+        
+    except Exception as e:
+        print(f"  An error occurred: {e}")
+        
+    if open_ports:
+        print("  Open ports and services found.")
+        
+    return open_ports
+
+def service_version_discovery(target):
+    """Retrieves OS and service version information."""
+    print("\n[+] 3. Service Version Discovery...")
+    service_info = {}
+    
+    try:
+        nm = nmap.PortScanner()
+        # -sV: Service/version detection
+        # -O: OS detection
+        nm.scan(target, arguments='-sV -O')
+        service_info = nm[target]
+    except Exception as e:
+        print(f"  An error occurred: {e}")
+        
+    if service_info:
+        print("  OS and service version information collected.")
+    return service_info
+
+def save_to_file(target, live_hosts, open_ports, service_info):
+    """Saves the gathered information to a text file."""
+    filename = f"analysis_results_{target}.txt"
+    print(f"\n[+] Saving analysis results to '{filename}'...")
+    
+    try:
+        with open(filename, 'w') as f:
+            f.write("--- Attack Surface Analysis Report ---\n")
+            f.write(f"Target URL/IP: {target}\n")
+            f.write("Date: " + str(scapy.datetime.datetime.now()) + "\n")
+            f.write("-------------------------------------\n\n")
+            
+            # Host Discovery
+            f.write("1. Host Discovery Results:\n")
+            if live_hosts:
+                f.write(f"  Live Hosts: {', '.join(live_hosts)}\n\n")
+            else:
+                f.write("  No live hosts found.\n\n")
+            
+            # Port Scanning
+            f.write("2. Port Scanning Results:\n")
+            if open_ports:
+                for scan_type, ports in open_ports.items():
+                    f.write(f"  {scan_type.replace('_', ' ').title()} Scan:\n")
+                    for port, info in ports.items():
+                        f.write(f"    Port: {port}/{info['protocol']} | State: {info['state']}\n")
+                f.write("\n")
+            else:
+                f.write("  No open ports found.\n\n")
+
+            # Service Version Discovery
+            f.write("3. Service Version Discovery Results:\n")
+            if service_info:
+                f.write("  Operating System Information:\n")
+                if 'osmatch' in service_info:
+                    for os_match in service_info['osmatch']:
+                        f.write(f"    OS: {os_match['name']} | Accuracy: {os_match['accuracy']}%\n")
+                else:
+                    f.write("    Operating system information not found.\n")
+                    
+                f.write("\n  Service Version Information:\n")
+                if 'tcp' in service_info:
+                    for port, info in service_info['tcp'].items():
+                        f.write(f"    Port: {port}/{info['protocol']} | Service: {info['name']} | Version: {info['version']}\n")
+                else:
+                    f.write("    Service version information not found.\n")
+            else:
+                f.write("  Service version discovery information not found.\n")
+                
+        print("  Saving completed successfully.")
+    except Exception as e:
+        print(f"  Error writing to file: {e}")
+
+def main():
+    target = get_target_url()
+    if not target:
+        sys.exit(1)
+        
+    print(f"\n[+] Starting attack surface analysis for '{target}'...")
+    
+    live_hosts = host_discovery(target)
+    open_ports = port_scanning(target)
+    service_info = service_version_discovery(target)
+    
+    save_to_file(target, live_hosts, open_ports, service_info)
+    
+    print("\n[+] Analysis complete.")
+
+if __name__ == "__main__":
+    main()
